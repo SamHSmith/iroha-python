@@ -1,2 +1,2 @@
-from ....rust import Enum, Struct, Tuple, Dict
-FindAllBlocks = Tuple[()]
+from ....rust import Enum, make_struct, make_tuple, Dict
+FindAllBlocks = make_tuple("FindAllBlocks")

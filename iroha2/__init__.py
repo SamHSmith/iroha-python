@@ -2,6 +2,7 @@
 from .sys import Client as _Client
 from .data_model.query import Query as _Query
 from .data_model.isi import Instruction as _Instruction
+from .data_model.events import Event
 
 
 class Client:
@@ -34,4 +35,4 @@ class Client:
         return q.parse_output(out) if hasattr(q, "parse_output") else out
 
     def listen(self, events_kind):
-        return self.cl.listen_for_events(events_kind)
+        return map(Event.from_rust, self.cl.listen_for_events(events_kind))

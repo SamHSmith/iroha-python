@@ -1,4 +1,8 @@
 # Export
+from typing import NamedTuple
+import enum
+import collections
+import dataclasses
 from importlib import import_module
 from ..iroha2 import Dict, List
 
@@ -22,7 +26,10 @@ def to_rust(obj):
     if isinstance(obj, list):
         return [to_rust(i) for i in obj]
     if isinstance(obj, tuple):
-        return (to_rust(i) for i in obj)
+        if len(obj) == 0:
+            return None
+        else:
+            return tuple(to_rust(i) for i in obj)
     if isinstance(obj, dict):
         return {k: to_rust(v) for k, v in obj.items()}
 
@@ -39,46 +46,7 @@ def get_class(path) -> type:
     return getattr(mod, name)
 
 
-class _Tuple(type):
-
-    @staticmethod
-    def _make_class(fields):
-
-        class RustTuple:
-            __fields = None
-
-            @classmethod
-            def _fields(cls):
-                if not cls.__fields:
-                    cls.__fields = [get_class(f) for f in fields]
-                return cls.__fields
-
-            def __init__(self, *args):
-                if not all(
-                        isinstance(a, f)
-                        for a, f in zip(args, self._fields())):
-                    raise ValueError(args)
-                self.items = args
-
-            def to_rust(self) -> tuple:
-                return tuple(to_rust(i) for i in self.items)
-
-        return RustTuple
-
-    def __getitem__(
-        cls,
-        fields,
-    ) -> type:
-        if isinstance(fields, (ClassPath, type)):
-            fields = [fields]
-
-        return cls.__class__._make_class(fields)
-
-
-class Tuple(metaclass=_Tuple):
-    pass
-
-
+# TODO: bring in line with other factories
 class _Enum(type):
 
     @staticmethod
@@ -86,6 +54,10 @@ class _Enum(type):
 
         class RustEnum:
             __variants = None
+            Type = enum.Enum('Type', [k for k, v in variants])
+
+            def __str__(self):
+                return f"{self.variant.name}"
 
             @classmethod
             def _variants(cls):
@@ -93,10 +65,35 @@ class _Enum(type):
                     cls.__variants = {k: get_class(v) for k, v in variants}
                 return cls.__variants
 
+            @classmethod
+            def from_rust(cls, value):
+                # TODO: Dict should inherit from Mapping
+                if isinstance(value, collections.Mapping)\
+                   or isinstance(value, Dict):
+                    if len(list(value.keys())) > 1:
+                        raise ValueError
+
+                    variant = list(value.keys())[0]
+                    variant_class = cls._variants()[variant]
+                    variant_value = value[variant]
+                    if hasattr(variant_class, 'from_rust'):
+                        variant_value = variant_class.from_rust(variant_value)
+                    if hasattr(variant_class, '_into_wrapped'):
+                        variant_value = variant_class._into_wrapped(
+                            variant_value)
+                    return cls(variant_value, variant)
+                elif type(value) is str:
+                    if value in cls._variants().keys():
+                        return cls(None, value)
+                    else:
+                        raise ValueError
+                else:
+                    raise ValueError
+
             def _from_value(self, value):
                 for variant, ty in self._variants().items():
                     if isinstance(value, ty):
-                        self.variant = variant
+                        self.variant = self.Type[variant]
                         self.value = value
                         return
 
@@ -106,11 +103,11 @@ class _Enum(type):
                 if variant is None:
                     self._from_value(value)
                 else:
-                    self.variant = variant
+                    self.variant = self.Type[variant]
                     self.value = value
 
             def to_rust(self) -> dict:
-                return {self.variant: to_rust(self.value)}
+                return {self.variant.name: to_rust(self.value)}
 
         for var, ty in variants:
 
@@ -151,63 +148,63 @@ class Enum(metaclass=_Enum):
     pass
 
 
-class _Struct(type):
+def make_tuple(name, fields=None):
+    if fields is None:
+        fields = []
+    cls = NamedTuple(name, [(f"f{i}", typ) for i, typ in enumerate(fields)])
+    cls.to_rust = lambda tup: tuple(to_rust(i) for i in tup)
+    return cls
 
-    @staticmethod
-    def _make_class(fields):
 
-        class RustStruct:
-            __fields = None
+def make_struct(structname, fields):
 
-            @classmethod
-            def _fields(cls):
-                if not cls.__fields:
-                    cls.__fields = [(k, get_class(v)) for k, v in fields]
-                return cls.__fields
+    def struct_to_rust(s):
+        return {field: to_rust(getattr(s, field)) for (field, _) in fields}
 
-            def _from_args(self, *args):
-                for v, (k, _) in zip(args, self._fields()):
-                    self.items[k] = v
-
-            def _from_kwargs(self, **kwargs):
-                for k, v in kwargs.items():
-                    self.items[k] = v
-
-            def __getattr__(self, name):
-                if name in self.items:
-                    return self.items[name]
+    def struct_from_rust(cls, obj):
+        args = []
+        for (argname, argtype) in fields:
+            argtype = get_class(argtype)
+            try:
+                # Special case, since those are flattened
+                # TODO: handle it better
+                if structname == "EvaluatesTo" or structname == "Metadata":
+                    arg = obj
                 else:
-                    raise AttributeError(name=name, obj=self)
+                    arg = obj[argname]
+            except KeyError:
+                raise KeyError(
+                    f"Error deserializing {structname}: "
+                    f"no key for field {argname}"
+                )
+            if hasattr(argtype, "from_rust"):
+                args.append(argtype.from_rust(arg))
+            else:
+                args.append(arg)
+        return cls(*args)
 
-            def __init__(self, *args, **kwargs):
-                self.items = {}
-
-                if len(args) != 0:
-                    self._from_args(*args)
-                if len(kwargs) != 0:
-                    self._from_kwargs(**kwargs)
-
-                if len(self.items) != len(self._fields()):
-                    missing = set(map(lambda x: x[0], self._fields())) \
-                        - set(self.items.keys())
-                    raise ValueError(f"Some fields are missing: {missing}")
-
-            def to_rust(self) -> dict:
-                return {k: to_rust(v) for k, v in self.items.items()}
-
-        return RustStruct
-
-    def __getitem__(
-        cls,
-        fields,
-    ) -> type:
-        if isinstance(fields, tuple) and len(fields) == 0:
-            fields = []
-        if isinstance(fields, tuple) and isinstance(fields[0], str):
-            fields = [fields]
-
-        return cls.__class__._make_class(fields)
+    return dataclasses.make_dataclass(structname,
+                                      fields,
+                                      namespace={
+                                          "to_rust": struct_to_rust,
+                                          "from_rust": classmethod(struct_from_rust),
+                                      })
 
 
-class Struct(metaclass=_Struct):
-    pass
+def wrapper(base):
+
+    def decorate(subclass):
+
+        def into_wrapped(self):
+            return subclass._from_inner(self)
+
+        base._into_wrapped = into_wrapped
+
+        def from_inner(inner):
+            inner.__class__ = subclass
+            return inner
+
+        subclass._from_inner = from_inner
+
+        return subclass
+    return decorate
