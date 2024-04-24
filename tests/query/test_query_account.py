@@ -1,11 +1,10 @@
 import allure
-import time
 import pytest
 
 from tests import client
 
 @pytest.fixture(scope="function", autouse=True)
-def story_account_register_account():
+def story_account_queries_accounts():
     allure.dynamic.story("Account queries accounts")
     allure.dynamic.label("permission", "no_permission_required")
 
@@ -22,7 +21,6 @@ def test_query_all_accounts_in_domain(
         GIVEN_registered_domain_with_registered_accounts):
     with allure.step(
             f'WHEN client queries all accounts in domain "{GIVEN_registered_domain_with_registered_accounts}"'):
-        time.sleep(3)
         accounts_in_domain = client.query_all_accounts_in_domain(GIVEN_registered_domain_with_registered_accounts)
     with allure.step(
             f'THEN the response should be a non-empty list of accounts in domain "{GIVEN_registered_domain_with_registered_accounts}"'):
